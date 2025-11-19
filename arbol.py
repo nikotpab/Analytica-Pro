@@ -78,7 +78,17 @@ def get_reglas_dec_text(arbol, regla_actual="Si", reglas_lista=None):
 def cargar_csv(ruta):
     try:
         with open(ruta, 'r', encoding='utf-8-sig') as f:
-            lector = csv.reader(f)
+            # Read the first line to determine the delimiter
+            header_line = f.readline()
+            f.seek(0)  # Reset file pointer
+
+            # Heuristic: Use semicolon if it's more frequent than comma
+            if header_line.count(';') > header_line.count(','):
+                delimiter = ';'
+            else:
+                delimiter = ','
+            
+            lector = csv.reader(f, delimiter=delimiter)
             header = next(lector)
             datos = [fila for fila in lector if fila and any(fila) and len(fila) == len(header)]
         return header, datos
