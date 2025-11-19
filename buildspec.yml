@@ -12,6 +12,9 @@ phases:
       - echo "Checking Python version..."
       - python --version || echo "Python not available in build environment"
       - echo "Repository URL: $ECR_REGISTRY"
+      - echo "Current directory: $(pwd)"
+      - echo "Listing files:"
+      - ls -la
       
   build:
     commands:
