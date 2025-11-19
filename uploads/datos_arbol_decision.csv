@@ -1,0 +1,9 @@
+Edad,Ingreso,Estudiante,Compra
+Joven,Alto,No,No
+Joven,Bajo,Sí,Sí
+Adulto,Bajo,Sí,Sí
+Adulto,Medio,No,Sí
+Adulto,Alto,Sí,Sí
+Mayor,Bajo,No,No
+Mayor,Medio,No,Sí
+Mayor,Alto,Sí,Sí

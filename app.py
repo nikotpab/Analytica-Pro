@@ -52,48 +52,6 @@ def download_file(filename):
 
 @app.route('/algoritmos', methods=['POST'])
 def run_algorithm():
-    """
-    Run a specified data analysis algorithm via file upload.
-    ---
-    tags:
-      - Algorithms
-    consumes:
-      - multipart/form-data
-    parameters:
-      - name: data_file
-        in: formData
-        type: file
-        required: true
-        description: The CSV data file to process.
-      - name: algoritmo
-        in: formData
-        type: string
-        required: true
-        description: The algorithm to execute.
-        enum: ['ESTANDARIZACION', 'NORMALIZACION', 'ESCALA_LOG', 'CHIMERGE', 'KMODAS', 'KMEDIAS', 'ARBOL']
-      - name: output_filename
-        in: formData
-        type: string
-        required: false
-        description: Optional desired name for the output PDF file.
-      - name: nombre_columna
-        in: formData
-        type: string
-        description: Name of the column to process (for ESTANDARIZACION, NORMALIZACION, ESCALA_LOG).
-      - name: objetivo
-        in: formData
-        type: string
-        description: Name of the target column (for ARBOL).
-      - name: inicio
-        in: formData
-        type: string
-        description: Name of the starting column for analysis range (for ARBOL).
-    responses:
-      200:
-        description: Algorithm executed successfully.
-      400:
-        description: Bad request.
-    """
     app.logger.debug(f"Formulario (request.form): {request.form.to_dict()}")
     app.logger.debug(f"Archivos (request.files): {request.files.to_dict()}")
 
@@ -115,13 +73,10 @@ def run_algorithm():
 
     user_defined_output = request.form.get('output_filename')
     if user_defined_output:
-        # Sanitize the user-provided filename
         output_filename = secure_filename(user_defined_output)
-        # Ensure it has a .pdf extension
         if not output_filename.lower().endswith('.pdf'):
             output_filename += '.pdf'
     else:
-        # Fallback to the original naming convention
         output_filename = f"{os.path.splitext(input_filename)[0]}_{algoritmo.lower()}_output.pdf"
 
     output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
@@ -163,20 +118,25 @@ def run_algorithm():
             if not all([objetivo, inicio]):
                 return jsonify({"error": "Faltan los parámetros 'objetivo' o 'inicio' para ARBOL"}), 400
 
-            encabezado, datos = tree.cargar_csv(data_path)
-            if not encabezado or not datos:
+            encabezado_raw, datos = tree.cargar_csv(data_path)
+            if not encabezado_raw or not datos:
                 return jsonify({"error": "No se pudieron cargar los datos del CSV"}), 500
+            
+            # Clean headers by stripping whitespace
+            encabezado = [h.strip() for h in encabezado_raw]
+            app.logger.debug(f"Cabeceras limpias del CSV: {encabezado}")
 
-            if objetivo not in encabezado or inicio not in encabezado:
-                return jsonify({"error": f"Las columnas '{objetivo}' o '{inicio}' no se encuentran en el archivo"}), 400
+            if objetivo.strip() not in encabezado or inicio.strip() not in encabezado:
+                error_msg = f"Las columnas '{objetivo}' o '{inicio}' no se encuentran en el archivo. Cabeceras encontradas: {encabezado}"
+                app.logger.error(error_msg)
+                return jsonify({"error": error_msg}), 400
 
-            idx_final_int = encabezado.index(objetivo)
-            idx_inicio_int = encabezado.index(inicio)
+            idx_final_int = encabezado.index(objetivo.strip())
+            idx_inicio_int = encabezado.index(inicio.strip())
             indices_vars = list(range(idx_inicio_int, idx_final_int))
 
             arbol_resultado = tree.construir_arbol(datos, encabezado, indices_vars, idx_final_int)
             
-            # For ARBOL, we might have multiple outputs, so we handle it slightly differently
             output_filename_visual = output_path.replace('.pdf', '_visual.pdf')
             tree.dibujar_arbol_pdf(arbol_resultado, output_filename_visual)
             
