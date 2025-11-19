@@ -1,34 +1,37 @@
 version: 0.2
-
 phases:
   pre_build:
     commands:
       - echo "Logging in to Amazon ECR..."
       - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      # --- Docker Hub Login ---
+      - echo "Logging in to Docker Hub using AWS Secrets Manager..."
+      # 1. Get the Secret JSON from Secrets Manager
+      - SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id docker-hub-credentials --query SecretString --output text)
+      # 2. Extract Username and Password (Access Token) using jq
+      - DOCKER_USERNAME=$(echo $SECRET_JSON | jq -r '.username')
+      - DOCKER_PASSWORD=$(echo $SECRET_JSON | jq -r '.password')
+      # 3. Log in to Docker Hub
+      - echo "$DOCKER_PASSWORD" | docker login --username "$DOCKER_USERNAME" --password-stdin
       - echo "Checking Python version..."
       - python --version || echo "Python not available in build environment"
-      - echo "Repository URL: $ECR_REGISTRY"
-      - echo "Current directory: $(pwd)"
+      - "echo \"Repository URL: $ECR_REGISTRY\""
+      - "echo \"Current directory: $(pwd)\""
       - echo "Listing files:"
       - ls -la
   build:
     commands:
-      - echo "Build started on $(date)"
+      - "echo \"Build started on $(date)\""
+      - echo "Enabling Docker BuildKit..."
+      - export DOCKER_BUILDKIT=1
       - echo "Building the Docker image..."
       - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
       - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $ECR_REGISTRY:$IMAGE_TAG
-      - echo "Build completed on $(date)"
+      - "echo \"Build completed on $(date)\""
   post_build:
     commands:
       - echo "Pushing the Docker image to ECR..."
       - docker push $ECR_REGISTRY:$IMAGE_TAG
-      - echo "Writing image definitions file..."
-      - printf '{"ImageURI":"%s"}' $ECR_REGISTRY:$IMAGE_TAG > imageDetail.json
-      - echo "Image pushed successfully: $ECR_REGISTRY:$IMAGE_TAG"
-artifacts:
-  files:
-    - imageDetail.json
-cache:
-  paths:
-    - '/root/.cache/pip/**/*'
-    
+      - "echo \"Writing image definitions file...\""
+      - printf '{"ImageURI":"%s"}' $ECR_REGISTRY:$IMAGE_TAG
+      - "echo \"Image pushed successfully: $ECR_REGISTRY:$IMAGE_TAG\""
