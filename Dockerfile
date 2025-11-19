@@ -37,7 +37,7 @@ RUN adduser \
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=bind,source=requirements.txt,target=requirements.txt \
     python -m pip install --upgrade pip && \
-    python -m pip install -r requirements.txt
+    python -m pip install -r requirements.txt gunicorn
 
 # Switch to the non-privileged user to run the application.
 USER appuser
@@ -49,4 +49,4 @@ COPY . .
 EXPOSE 8000
 
 # Run the application.
-CMD gunicorn '.venv.lib.python3.9.site-packages.werkzeug.wsgi' --bind=0.0.0.0:8000 --workers=4
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "wsgi:app"]
