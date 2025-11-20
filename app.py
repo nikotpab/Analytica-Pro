@@ -1,30 +1,24 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from flasgger import Swagger
-from flask_cors import CORS
+import kmedias as kme
+import kmodas as kmo
+import arbol as tree
+import chimerge as cm
+import estandarizacion as est
+import normalizacion as norm
+import escala_log as log
 import os
-import logging
-from werkzeug.utils import secure_filename
-
-logging.basicConfig(level=logging.DEBUG)
-
-try:
-    import kmedias as kme
-    import kmodas as kmo
-    import arbol as tree
-    import chimerge as cm
-    import estandarizacion as est
-    import normalizacion as norm
-    import escala_log as log
-except ImportError as e:
-    logging.error(f"Error al importar módulos de algoritmos: {e}")
 
 app = Flask("AnalyticaPro")
-CORS(app)
 
-UPLOAD_FOLDER = 'uploads'
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# ==================== EFS VOLUME INTEGRATION ====================
+# Use mounted EFS volume for persistent data storage
+DATA_VOLUME_PATH = "/app/data"  # This matches the containerPath in task definition
+
+# Ensure data directory exists when app starts
+os.makedirs(DATA_VOLUME_PATH, exist_ok=True)
+print(f"EFS volume mounted at: {DATA_VOLUME_PATH}")  # For debugging
+# ==================== END EFS VOLUME INTEGRATION ====================
 
 app.config['SWAGGER'] = {
     'title': 'AnalyticaPro API',
@@ -33,132 +27,221 @@ app.config['SWAGGER'] = {
 }
 swagger = Swagger(app)
 
+
 @app.route('/')
 def welcome():
+    """A welcome message.
+    ---
+    responses:
+      200:
+        description: Returns a welcome message.
+    """
     return 'Bienvenidx a AnalyticaPro'
 
-@app.route('/download/<path:filename>')
-def download_file(filename):
-    app.logger.info(f"Solicitud de descarga para el archivo: {filename}")
-    try:
-        return send_from_directory(
-            app.config['UPLOAD_FOLDER'],
-            filename,
-            as_attachment=True
-        )
-    except FileNotFoundError:
-        app.logger.error(f"Archivo no encontrado en la ruta: {os.path.join(app.config['UPLOAD_FOLDER'], filename)}")
-        return jsonify({"error": "Archivo no encontrado"}), 404
 
 @app.route('/algoritmos', methods=['POST'])
 def run_algorithm():
-    app.logger.debug(f"Formulario (request.form): {request.form.to_dict()}")
-    app.logger.debug(f"Archivos (request.files): {request.files.to_dict()}")
+    """
+    Run a specified data analysis algorithm.
+    ---
+    tags:
+      - Algorithms
+    parameters:
+      - name: body
+        in: body
+        required: true
+        schema:
+          id: AlgorithmRequest
+          required:
+            - algoritmo
+            - data_path
+          properties:
+            algoritmo:
+              type: string
+              description: The algorithm to execute.
+              enum: ['ESTANDARIZACION', 'NORMALIZACION', 'ESCALA_LOG', 'CHIMERGE', 'KMODAS', 'KMEDIAS', 'ARBOL']
+            data_path:
+              type: string
+              description: Absolute path to the input CSV data file. Must be within /app/data/ directory.
+            nombre_columna:
+              type: string
+              description: Name of the column to process (for ESTANDARIZACION, NORMALIZACION, ESCALA_LOG).
+            objetivo:
+              type: string
+              description: Name of the target column (for ARBOL).
+            inicio:
+              type: string
+              description: Name of the starting column for analysis range (for ARBOL).
+    responses:
+      200:
+        description: Algorithm executed successfully. Returns path(s) to the output PDF(s).
+      400:
+        description: Bad request due to missing or invalid parameters.
+      500:
+        description: Internal server error during algorithm execution.
+    """
+    if not request.is_json:
+        return jsonify({"error": "Request must be in JSON format"}), 400
 
-    if 'data_file' not in request.files:
-        return jsonify({"error": "Falta el archivo 'data_file' en la solicitud."}), 400
+    req_data = request.get_json()
+    algoritmo = req_data.get('algoritmo')
+    data_path = req_data.get('data_path')
 
-    file = request.files['data_file']
-    if file.filename == '':
-        return jsonify({"error": "No se seleccionó ningún archivo."}), 400
+    if not all([algoritmo, data_path]):
+        return jsonify({"error": "Missing required parameters: 'algoritmo' and 'data_path'"}), 400
 
-    algoritmo = request.form.get('algoritmo')
-    if not algoritmo:
-        return jsonify({"error": "Falta el parámetro 'algoritmo'."}), 400
+    # ==================== SECURITY CHECK FOR EFS VOLUME ====================
+    # Ensure data_path is within our mounted EFS volume for security
+    if not data_path.startswith(DATA_VOLUME_PATH):
+        return jsonify({
+            "error": f"Data path must be within the EFS volume directory: {DATA_VOLUME_PATH}. Received: {data_path}"
+        }), 400
+    # ==================== END SECURITY CHECK ====================
 
-    input_filename = secure_filename(file.filename)
-    data_path = os.path.join(app.config['UPLOAD_FOLDER'], input_filename)
-    file.save(data_path)
-    app.logger.info(f"Archivo guardado en: {data_path}")
+    if not os.path.exists(data_path):
+        return jsonify({"error": f"Data file not found at: {data_path}"}), 400
 
-    user_defined_output = request.form.get('output_filename')
-    if user_defined_output:
-        output_filename = secure_filename(user_defined_output)
-        if not output_filename.lower().endswith('.pdf'):
-            output_filename += '.pdf'
-    else:
-        output_filename = f"{os.path.splitext(input_filename)[0]}_{algoritmo.lower()}_output.pdf"
-
-    output_path = os.path.join(app.config['UPLOAD_FOLDER'], output_filename)
-    
-    result = None
-    error_message = None
+    output_filename = f"{os.path.splitext(os.path.basename(data_path))[0]}_{algoritmo.lower()}_output.pdf"
+    output_path = os.path.join(os.path.dirname(data_path), output_filename)
 
     try:
         if algoritmo in ['ESTANDARIZACION', 'NORMALIZACION', 'ESCALA_LOG']:
-            nombre_columna = request.form.get('nombre_columna')
+            nombre_columna = req_data.get('nombre_columna')
             if not nombre_columna:
-                return jsonify({"error": f"Falta el parámetro 'nombre_columna' para {algoritmo}"}), 400
+                return jsonify({"error": f"Missing 'nombre_columna' for {algoritmo}"}), 400
 
             if algoritmo == 'ESTANDARIZACION':
-                result = est.estandarizar_datos(data_path, nombre_columna, output_pdf_path=output_path)
-                if result is None: error_message = f"La columna '{nombre_columna}' no se encontró en el archivo o no es numérica."
+                est.estandarizar_datos(data_path, nombre_columna, output_pdf_path=output_path)
             elif algoritmo == 'NORMALIZACION':
-                result = norm.normalizar_datos(data_path, nombre_columna, output_pdf_path=output_path)
-                if result is None: error_message = f"La columna '{nombre_columna}' no se encontró en el archivo o no es numérica."
+                norm.normalizar_datos(data_path, nombre_columna, output_pdf_path=output_path)
             elif algoritmo == 'ESCALA_LOG':
-                result = log.transformar_log(data_path, nombre_columna, output_pdf_path=output_path)
-                if result is None: error_message = f"La columna '{nombre_columna}' no se encontró en el archivo o no es numérica."
+                log.transformar_log(data_path, nombre_columna, output_pdf_path=output_path)
+
+            return jsonify({"message": f"{algoritmo} executed successfully.", "output_path": output_path})
 
         elif algoritmo == 'CHIMERGE':
-            result = cm.run_chimerge(data_path, output_pdf_path=output_path)
-            if result is None: error_message = "Error durante la ejecución de Chi-Merge. Verifique el formato del archivo y las columnas."
+            cm.run_chimerge(data_path, output_pdf_path=output_path)
+            return jsonify({"message": "CHIMERGE executed successfully.", "output_path": output_path})
 
         elif algoritmo == 'KMODAS':
-            result = kmo.run_kmodas(data_path, output_pdf_path=output_path)
-            if result is None: error_message = "Error en K-Modas. Asegúrese de que la columna 'X2' exista y sea numérica."
+            kmo.run_kmodas(data_path, output_pdf_path=output_path)
+            return jsonify({"message": "KMODAS executed successfully.", "output_path": output_path})
 
         elif algoritmo == 'KMEDIAS':
-            result = kme.run_kmedias(data_path, output_pdf_path=output_path)
-            if result is None: error_message = "Error en K-Medias. Verifique las columnas 'longitude', 'latitude', y 'median_house_value'."
+            kme.run_kmedias(data_path, output_pdf_path=output_path)
+            return jsonify({"message": "KMEDIAS executed successfully.", "output_path": output_path})
 
         elif algoritmo == 'ARBOL':
-            objetivo = request.form.get('objetivo')
-            inicio = request.form.get('inicio')
+            objetivo = req_data.get('objetivo')
+            inicio = req_data.get('inicio')
             if not all([objetivo, inicio]):
-                return jsonify({"error": "Faltan los parámetros 'objetivo' o 'inicio' para ARBOL"}), 400
+                return jsonify({"error": "Missing 'objetivo' or 'inicio' for ARBOL"}), 400
 
-            encabezado_raw, datos = tree.cargar_csv(data_path)
-            if not encabezado_raw or not datos:
-                return jsonify({"error": "No se pudieron cargar los datos del CSV"}), 500
-            
-            # Clean headers by stripping whitespace
-            encabezado = [h.strip() for h in encabezado_raw]
-            app.logger.debug(f"Cabeceras limpias del CSV: {encabezado}")
+            encabezado, datos = tree.cargar_csv(data_path)
+            if not encabezado or not datos:
+                return jsonify({"error": "Failed to load data for ARBOL algorithm"}), 500
 
-            if objetivo.strip() not in encabezado or inicio.strip() not in encabezado:
-                error_msg = f"Las columnas '{objetivo}' o '{inicio}' no se encuentran en el archivo. Cabeceras encontradas: {encabezado}"
-                app.logger.error(error_msg)
-                return jsonify({"error": error_msg}), 400
-
-            idx_final_int = encabezado.index(objetivo.strip())
-            idx_inicio_int = encabezado.index(inicio.strip())
+            idx_final_int = encabezado.index(objetivo)
+            idx_inicio_int = encabezado.index(inicio)
             indices_vars = list(range(idx_inicio_int, idx_final_int))
 
             arbol_resultado = tree.construir_arbol(datos, encabezado, indices_vars, idx_final_int)
-            
-            output_filename_visual = output_path.replace('.pdf', '_visual.pdf')
-            tree.dibujar_arbol_pdf(arbol_resultado, output_filename_visual)
-            
-            result = True 
-            output_filename = os.path.basename(output_filename_visual)
+
+            output_pdf_grafico = output_path.replace('.pdf', '_visual.pdf')
+            output_pdf_reglas = output_path.replace('.pdf', '_reglas.pdf')
+
+            tree.dibujar_arbol_pdf(arbol_resultado, output_pdf_grafico)
+
+            reglas_texto = "\n".join(tree.get_reglas_dec_text(arbol_resultado))
+            with tree.PdfPages(output_pdf_reglas) as pdf:
+                tree.text_to_pdf("REGLAS DE DECISIÓN\n\n" + reglas_texto, pdf)
+
+            return jsonify({
+                "message": "ARBOL execution complete.",
+                "output_files": {
+                    "visual": output_pdf_grafico,
+                    "rules": output_pdf_reglas
+                }
+            })
 
         else:
-            return jsonify({"error": f"Algoritmo desconocido: {algoritmo}"}), 400
-
-        if result is None:
-            app.logger.error(f"La ejecución del algoritmo falló: {error_message}")
-            return jsonify({"error": error_message}), 400
-
-        app.logger.info(f"Ejecución exitosa. Archivo de salida: {output_filename}")
-        return jsonify({
-            "message": f"{algoritmo} ejecutado con éxito.",
-            "output_filename": output_filename
-        })
+            return jsonify({"error": f"Unknown algorithm: {algoritmo}"}), 400
 
     except Exception as e:
-        app.logger.exception("Ocurrió una excepción durante la ejecución del algoritmo")
-        return jsonify({"error": f"Error interno del servidor: {str(e)}"}), 500
+        return jsonify({"error": f"An error occurred during execution: {str(e)}"}), 500
+
+
+# ==================== NEW ENDPOINT FOR FILE MANAGEMENT ====================
+@app.route('/files/list', methods=['GET'])
+def list_files():
+    """
+    List files in the EFS data directory.
+    ---
+    tags:
+      - File Management
+    responses:
+      200:
+        description: Returns list of files in the data directory.
+      500:
+        description: Error reading directory.
+    """
+    try:
+        files = []
+        for item in os.listdir(DATA_VOLUME_PATH):
+            item_path = os.path.join(DATA_VOLUME_PATH, item)
+            files.append({
+                "name": item,
+                "path": item_path,
+                "is_file": os.path.isfile(item_path),
+                "size": os.path.getsize(item_path) if os.path.isfile(item_path) else 0
+            })
+        return jsonify({"files": files})
+    except Exception as e:
+        return jsonify({"error": f"Error reading directory: {str(e)}"}), 500
+
+
+@app.route('/files/upload', methods=['POST'])
+def upload_file():
+    """
+    Upload a file to the EFS data directory.
+    ---
+    tags:
+      - File Management
+    parameters:
+      - name: file
+        in: formData
+        type: file
+        required: true
+        description: The file to upload
+    responses:
+      200:
+        description: File uploaded successfully.
+      400:
+        description: No file provided.
+      500:
+        description: Error uploading file.
+    """
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+
+    try:
+        filename = file.filename
+        file_path = os.path.join(DATA_VOLUME_PATH, filename)
+        file.save(file_path)
+        return jsonify({
+            "message": "File uploaded successfully",
+            "path": file_path,
+            "filename": filename
+        })
+    except Exception as e:
+        return jsonify({"error": f"Error uploading file: {str(e)}"}), 500
+
+
+# ==================== END NEW ENDPOINTS ====================
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', port=8000)  # Added host and port for container
