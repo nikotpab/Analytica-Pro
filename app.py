@@ -12,12 +12,7 @@ import os
 
 app = Flask("AnalyticaPro")
 
-CORS(app, origins=[
-    "http://localhost:5173",
-    "https://doug-qualifications-wireless-physical.trycloudflare.com",
-    "https://wives-lcd-loan-cake.trycloudflare.com",
-    "http://analytica-pro-alb-713719803.us-east-1.elb.amazonaws.com"
-])
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ==================== EFS VOLUME INTEGRATION ====================
 # Use mounted EFS volume for persistent data storage
